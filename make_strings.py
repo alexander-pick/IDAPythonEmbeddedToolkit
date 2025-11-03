@@ -15,56 +15,117 @@
 # OR OTHER DEALINGS IN THE SOFTWARE.
 #
 # 2020-08-07 - modified to work on IDA 7.x - Alexander Pick (alx@pwn.su)
-#
+# 2020-08-07 - modified to work on IDA 9.x, extended - Alexander Pick (alx@pwn.su)
 
-##############################################################################################
-# make_strings.py
-# Searches the user entered address range for a series of ASCII bytes to define as strings.
-# If the continuous series of ASCII bytes has a length greater or equal to minimum_length and
-# ends with a character in string_end, the scripts undefines the bytes in the series
-# and attempts to define it as a string.
-#
-# Input: 	start_addr: 	Start address for range to search for strings
-#			end_addr:		End address for range to search for strings
-#
-##############################################################################################
+import ida_kernwin
+import ida_ida
+import ida_bytes
+import ida_nalt
+import idc
+import ida_auto
 
-################### USER DEFINED VALUES ###################
-min_length = 5           			# Minimum number of characters needed to define a string       
-string_end = [0x00]		# Possible "ending characters" for strings. A string will not be 
-                                    # defined if it does not end with one of these characters
-###########################################################
+def make_strings():
+    # Ask for parameters interactively
+    start_addr = ida_kernwin.ask_addr(
+        ida_ida.inf_get_min_ea(),
+        "Please enter the starting address for the data to be analyzed."
+    )
+    end_addr = ida_kernwin.ask_addr(
+        ida_ida.inf_get_max_ea(),
+        "Please enter the ending address for the data to be analyzed."
+    )
 
-start_addr = ida_kernwin.ask_addr(ida_ida.inf_get_min_ea(), "Please enter the starting address for the data to be analyzed.")
-end_addr = ida_kernwin.ask_addr(ida_ida.inf_get_max_ea(), "Please enter the ending address for the data to be analyzed.")
+    if (
+        start_addr is None or end_addr is None
+        or start_addr == idc.BADADDR or end_addr == idc.BADADDR
+        or start_addr >= end_addr
+    ):
+        print("[make_strings.py] QUITTING. Entered address values not valid.")
+        return
 
-if ((start_addr is not None and end_addr is not None) and (start_addr != BADADDR and end_addr != BADADDR) and start_addr < end_addr):
-	string_start = start_addr
-	print "[make_strings.py] STARTING. Attempting to make strings with a minimum length of %d on data in range 0x%x to 0x%x" % (min_length, start_addr, end_addr)
-	num_strings = 0
-	while string_start < end_addr:
-		num_chars = 0
-		curr_addr = string_start
-		while curr_addr < end_addr:
-			byte = idc.get_wide_byte(curr_addr)
-			if ((byte < 0x7F and byte > 0x1F) or byte in (0x9, 0xD, 0xA)):		# Determine if a byte is a "character" based on this ASCII range
-				num_chars += 1
-				curr_addr += 1			
-			else:
-				if ((byte in string_end) and (num_chars >= min_length)):
-					ida_bytes.del_items(string_start, curr_addr - string_start, DELIT_SIMPLE)
-					if (ida_bytes.create_strlit(string_start, 0, ida_nalt.STRTYPE_TERMCHR) == 1): #get_inf_attr(INF_STRTYPE)
-						print "[make_strings.py] String created at 0x%x to 0x%x" % (string_start, curr_addr)
-						num_strings += 1
-						string_start = curr_addr
-						break
-					else:
-						#print "[make_strings.py] String create FAILED at 0x%x to 0x%x" % (string_start, curr_addr)
-						break
-				else:		
-					# String does not end with one of the defined "ending characters", does not meet the minimum string length, or is not an ASCII character
-					break
-		string_start += 1
-	print "[make_strings.py] FINISHED. Created %d strings in range 0x%x to 0x%x" % (num_strings, start_addr, end_addr)
-else:
-	print "[make_strings.py] QUITTING. Entered address values not valid."
+    min_length = ida_kernwin.ask_long(5, "Enter minimum string length:")
+    if min_length is None or min_length < 1:
+        min_length = 5
+
+    print(f"[make_strings.py] STARTING. Scanning range 0x{start_addr:x} - 0x{end_addr:x}, min length {min_length}")
+
+    # Initialize
+    num_strings = 0
+    total_size = end_addr - start_addr
+    current = start_addr
+
+    ida_kernwin.show_wait_box("Making strings...")
+
+    try:
+        while current < end_addr:
+            # Show progress bar
+            ida_kernwin.replace_wait_box(f"Processing: 0x{current:x} ({(current - start_addr) * 100 // total_size}%)")
+
+            # Try ASCII first
+            ascii_len = _detect_ascii_length(current, end_addr)
+            unicode_len = _detect_unicode_length(current, end_addr)
+
+            # Determine if either qualifies as a string
+            if ascii_len >= min_length or unicode_len >= min_length:
+                if unicode_len > ascii_len:
+                    str_type = ida_nalt.STRTYPE_C_16
+                    str_len = unicode_len * 2  # bytes
+                else:
+                    str_type = ida_nalt.STRTYPE_TERMCHR
+                    str_len = ascii_len
+
+                # Undefine any code or data at this location
+                ida_bytes.del_items(current, str_len, ida_bytes.DELIT_SIMPLE)
+                ida_auto.auto_wait()  # wait for analysis sync
+
+                # Create the string literal
+                if ida_bytes.create_strlit(current, str_len, str_type) == 1:
+                    end_str = current + str_len
+                    print(f"[make_strings.py] String created at 0x{current:x} - 0x{end_str:x} ({'Unicode' if str_type == ida_nalt.STRTYPE_C_16 else 'ASCII'})")
+                    num_strings += 1
+                    current = end_str
+                    continue  # Skip ahead past this string
+
+            # Move to next byte and continue scanning
+            current += 1
+
+    finally:
+        ida_kernwin.hide_wait_box()
+
+    print(f"[make_strings.py] FINISHED. Created {num_strings} strings in range 0x{start_addr:x} - 0x{end_addr:x}")
+
+
+def _detect_ascii_length(addr, end_addr):
+    curr = addr
+    count = 0
+    while curr < end_addr:
+        b = idc.get_wide_byte(curr)
+        if (0x1F < b < 0x7F) or (b in (0x09, 0x0A, 0x0D)):  # printable ASCII or whitespace
+            count += 1
+            curr += 1
+        elif b == 0x00 and count > 0:  # null terminator
+            return count
+        else:
+            break
+    return 0
+
+
+def _detect_unicode_length(addr, end_addr):
+    curr = addr
+    count = 0
+    while curr + 1 < end_addr:
+        lo = idc.get_wide_byte(curr)
+        hi = idc.get_wide_byte(curr + 1)
+        if lo == 0x00 and hi == 0x00 and count > 0:  # null terminator
+            return count
+        char_code = lo | (hi << 8)
+        if 0x20 <= char_code <= 0x7E or char_code in (0x09, 0x0A, 0x0D):
+            count += 1
+            curr += 2
+        else:
+            break
+    return 0
+
+
+if __name__ == "__main__":
+    make_strings()
