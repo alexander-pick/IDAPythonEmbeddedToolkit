@@ -14,8 +14,8 @@
 # TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE 
 # OR OTHER DEALINGS IN THE SOFTWARE.
 #
-# 2020-08-07 - modified to work on IDA 7.x - Alexander Pick (alx@pwn.su)
-# 2020-08-07 - modified to work on IDA 9.x, extended - Alexander Pick (alx@pwn.su)
+# 2020-08-07 - modified to work on IDA 7.x - Alexander Pick (contact@alexander-pick.com)
+# 2025-11-03 - modified to work on IDA 9.x, extended - Alexander Pick (contact@alexander-pick.com)
 
 import ida_kernwin
 import ida_ida
@@ -25,6 +25,7 @@ import idc
 import ida_auto
 
 def make_strings():
+
     # Ask for parameters interactively
     start_addr = ida_kernwin.ask_addr(
         ida_ida.inf_get_min_ea(),
@@ -44,6 +45,7 @@ def make_strings():
         return
 
     min_length = ida_kernwin.ask_long(5, "Enter minimum string length:")
+    
     if min_length is None or min_length < 1:
         min_length = 5
 
@@ -53,13 +55,17 @@ def make_strings():
     num_strings = 0
     total_size = end_addr - start_addr
     current = start_addr
+    last_progress_update = start_addr
 
     ida_kernwin.show_wait_box("Making strings...")
 
     try:
         while current < end_addr:
-            # Show progress bar
-            ida_kernwin.replace_wait_box(f"Processing: 0x{current:x} ({(current - start_addr) * 100 // total_size}%)")
+            # Throttle progress updates every 0x2000 bytes
+            if current - last_progress_update >= 0x2000:
+                percent = (current - start_addr) * 100 // total_size
+                ida_kernwin.replace_wait_box(f"Processing: 0x{current:x} ({percent}%)")
+                last_progress_update = current
 
             # Try ASCII first
             ascii_len = _detect_ascii_length(current, end_addr)
@@ -81,7 +87,8 @@ def make_strings():
                 # Create the string literal
                 if ida_bytes.create_strlit(current, str_len, str_type) == 1:
                     end_str = current + str_len
-                    print(f"[make_strings.py] String created at 0x{current:x} - 0x{end_str:x} ({'Unicode' if str_type == ida_nalt.STRTYPE_C_16 else 'ASCII'})")
+                    print(f"[make_strings.py] String created at 0x{current:x} - 0x{end_str:x} "
+                          f"({'Unicode' if str_type == ida_nalt.STRTYPE_C_16 else 'ASCII'})")
                     num_strings += 1
                     current = end_str
                     continue  # Skip ahead past this string
@@ -96,8 +103,10 @@ def make_strings():
 
 
 def _detect_ascii_length(addr, end_addr):
+
     curr = addr
     count = 0
+    
     while curr < end_addr:
         b = idc.get_wide_byte(curr)
         if (0x1F < b < 0x7F) or (b in (0x09, 0x0A, 0x0D)):  # printable ASCII or whitespace
@@ -111,8 +120,10 @@ def _detect_ascii_length(addr, end_addr):
 
 
 def _detect_unicode_length(addr, end_addr):
+
     curr = addr
     count = 0
+    
     while curr + 1 < end_addr:
         lo = idc.get_wide_byte(curr)
         hi = idc.get_wide_byte(curr + 1)
