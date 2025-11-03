@@ -82,7 +82,7 @@ def make_strings():
 
                 # Undefine any code or data at this location
                 ida_bytes.del_items(current, str_len, ida_bytes.DELIT_SIMPLE)
-                ida_auto.auto_wait()  # wait for analysis sync
+                #ida_auto.auto_wait()  # wait for analysis sync
 
                 # Create the string literal
                 if ida_bytes.create_strlit(current, str_len, str_type) == 1:
@@ -140,3 +140,4 @@ def _detect_unicode_length(addr, end_addr):
 
 if __name__ == "__main__":
     make_strings()
+
